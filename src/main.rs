@@ -30,6 +30,8 @@ const STAKE_DEMO: f64 = 0.35;
 const STAKE_REAL_STEP1: f64 = 0.35;
 const STAKE_REAL_STEP2: f64 = 0.79;
 
+static mut CURRENT_LOSS: bool = false;
+
 /// Mode eksekusi bot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
@@ -429,36 +431,61 @@ async fn run_real_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
     info!("🎯 REAL Step 1");
     info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP1);
     
-    let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
+    if unsafe { !CURRENT_LOSS } {
+
+        let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
+        
+        if won1 {
+            info!("");
+            info!("🎉 ════════════════════════════════════════");
+            info!("🎉 REAL Step 1 WON! → Back to DEMO");
+            info!("🎉 ════════════════════════════════════════");
     
-    if won1 {
+            sleep(Duration::from_secs(300)).await;
+    
+            unsafe {
+                CURRENT_LOSS = false;
+            }
+    
+            return Ok(());
+        } else {
+            info!("⚠️  ════════════════════════════════════════");
+            info!("⚠️  REAL Step 1 LOST → Back to DEMO");
+            info!("⚠️  ════════════════════════════════════════");
+
+            unsafe {
+                CURRENT_LOSS = true;
+            }
+        }
+
+    } else {
         info!("");
-        info!("🎉 ════════════════════════════════════════");
-        info!("🎉 REAL Step 1 WON! → Back to DEMO");
-        info!("🎉 ════════════════════════════════════════");
-        return Ok(());
+        info!("💎 ════════════════════════════════════════");
+        info!("💎 REAL MODE: Step 2 (Martingale)");
+        info!("💎 ════════════════════════════════════════");
+        info!("🎯 REAL Step 2");
+        info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP2);
+        
+        let won2 = place_fall_trade(ws, STAKE_REAL_STEP2, &cfg.currency).await?;
+        
+        unsafe {
+            CURRENT_LOSS = false;
+        }
+
+        info!("");
+        if won2 {
+            info!("🎉 ════════════════════════════════════════");
+            info!("🎉 REAL Step 2 WON! → Back to DEMO");
+            info!("🎉 ════════════════════════════════════════");
+            
+        } else {
+            info!("⚠️  ════════════════════════════════════════");
+            info!("⚠️  REAL Step 2 LOST → Back to DEMO");
+            info!("⚠️  ════════════════════════════════════════");
+        }
     }
     
-    // Step 2 (Martingale)
-    // info!("");
-    // info!("💎 ════════════════════════════════════════");
-    // info!("💎 REAL MODE: Step 2 (Martingale)");
-    // info!("💎 ════════════════════════════════════════");
-    // info!("🎯 REAL Step 2");
-    // info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP2);
     
-    // let won2 = place_fall_trade(ws, STAKE_REAL_STEP2, &cfg.currency).await?;
-    
-    // info!("");
-    // if won2 {
-    //     info!("🎉 ════════════════════════════════════════");
-    //     info!("🎉 REAL Step 2 WON! → Back to DEMO");
-    //     info!("🎉 ════════════════════════════════════════");
-    // } else {
-    //     info!("⚠️  ════════════════════════════════════════");
-    //     info!("⚠️  REAL Step 2 LOST → Back to DEMO");
-    //     info!("⚠️  ════════════════════════════════════════");
-    // }
     
     Ok(())
 }
@@ -492,7 +519,7 @@ async fn main() -> Result<()> {
     let mut current_mode = Mode::Demo;
     let mut ws_demo: Option<WsClient> = None;
     let mut ws_real: Option<WsClient> = None;
-    
+
     // Siklus tanpa batas waktu dengan persistent connections
     loop {
         cycle_count += 1;
