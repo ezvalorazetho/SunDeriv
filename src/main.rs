@@ -477,15 +477,14 @@ async fn run_real_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
             info!("🎉 ════════════════════════════════════════");
             info!("🎉 REAL Step 2 WON! → Back to DEMO");
             info!("🎉 ════════════════════════════════════════");
-            
+
+            sleep(Duration::from_secs(300)).await;
         } else {
             info!("⚠️  ════════════════════════════════════════");
             info!("⚠️  REAL Step 2 LOST → Back to DEMO");
             info!("⚠️  ════════════════════════════════════════");
         }
-    }
-    
-    
+    }    
     
     Ok(())
 }
