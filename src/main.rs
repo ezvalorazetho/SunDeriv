@@ -27,7 +27,7 @@ const DURATION_MINUTES: u32 = 1;
 
 /// Stake default demo & real step-1.
 const STAKE_DEMO: f64 = 0.5;
-const STAKE_REAL_STEP1: f64 = 0.35;
+const STAKE_REAL_STEP1: f64 = 0.5;
 const STAKE_REAL_STEP2: f64 = 0.79;
 
 static mut CURRENT_LOSS: bool = false;
