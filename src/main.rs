@@ -458,7 +458,7 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
             
             if losses_in_a_row >= 4 {
                 unsafe {
-                    RISE = true;
+                    RISE = false;
                 }
 
                 info!("");
@@ -475,7 +475,7 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
             
             if winner_in_a_row >= 4 {
                 unsafe {
-                    RISE = false;
+                    RISE = true;
                 }
 
                 info!("");
