@@ -454,8 +454,13 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
         if !won {
             losses_in_a_row += 1;
             info!("📉 Loss recorded | Streak: {}/4", losses_in_a_row);
+            winner_in_a_row = 0;
             
             if losses_in_a_row >= 4 {
+                unsafe {
+                    RISE = true;
+                }
+
                 info!("");
                 info!("✨ ════════════════════════════════════════");
                 info!("✨ TARGET REACHED: 4 losses in a row!");
@@ -466,8 +471,13 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
         } else {
             winner_in_a_row += 1;
             info!("📉 Win recorded | Streak: {}/4", winner_in_a_row);
+            losses_in_a_row = 0;
             
             if winner_in_a_row >= 4 {
+                unsafe {
+                    RISE = false;
+                }
+
                 info!("");
                 info!("✨ ════════════════════════════════════════");
                 info!("✨ TARGET REACHED: 4 winner in a row!");
