@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
 use tokio::net::TcpStream;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
-
+use std::{io::{self, Write}, thread, time::Instant};
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Simbol Volatility 10 (bukan 1s). Jika ingin 1s gunakan "1HZ10V".
@@ -26,7 +26,7 @@ const CONTRACT_TYPE_FALL: &str = "PUT";
 const DURATION_MINUTES: u32 = 1;
 
 /// Stake default demo & real step-1.
-const STAKE_DEMO: f64 = 0.35;
+const STAKE_DEMO: f64 = 0.5;
 const STAKE_REAL_STEP1: f64 = 0.35;
 const STAKE_REAL_STEP2: f64 = 0.79;
 
@@ -129,6 +129,21 @@ struct PocInner {
     payout: Option<f64>,
     #[serde(rename = "profit")]
     profit: Option<f64>,
+}
+
+fn wait_for_minutes(minutes: u64) {
+    let start = Instant::now();
+    let total = Duration::from_secs(minutes * 60);
+
+    println!("Mulai proses selama {minutes} menit...");
+
+    while start.elapsed() < total {
+        print!(".");
+        io::stdout().flush().unwrap();
+        thread::sleep(Duration::from_secs(1)); // jeda 1 detik
+    }
+
+    println!("\nSelesai setelah {} menit!", minutes);
 }
 
 /// Membuat koneksi WS dan authorize.
@@ -423,69 +438,32 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
 async fn run_real_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
     info!("");
     info!("💎 ════════════════════════════════════════");
-    info!("💎 REAL MODE: Step 1");
+    info!("💎 REAL MODE");
     info!("💎 ════════════════════════════════════════");
     
     // Step 1
     info!("");
-    info!("🎯 REAL Step 1");
+    info!("🎯 REAL Step");
     info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP1);
     
-    if unsafe { !CURRENT_LOSS } {
-
-        let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
-        
-        if won1 {
-            info!("");
-            info!("🎉 ════════════════════════════════════════");
-            info!("🎉 REAL Step 1 WON! → Back to DEMO");
-            info!("🎉 ════════════════════════════════════════");
+    let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
     
-            sleep(Duration::from_secs(300)).await;
-    
-            unsafe {
-                CURRENT_LOSS = false;
-            }
-    
-            return Ok(());
-        } else {
-            info!("⚠️  ════════════════════════════════════════");
-            info!("⚠️  REAL Step 1 LOST → Back to DEMO");
-            info!("⚠️  ════════════════════════════════════════");
+    if won1 {
+        info!("");
+        info!("🎉 ════════════════════════════════════════");
+        info!("🎉 REAL Step WON! → Back to DEMO");
+        info!("🎉 ════════════════════════════════════════");
 
-            unsafe {
-                CURRENT_LOSS = true;
-            }
-        }
+        wait_for_minutes(5);
 
+        return Ok(());
     } else {
-        info!("");
-        info!("💎 ════════════════════════════════════════");
-        info!("💎 REAL MODE: Step 2 (Martingale)");
-        info!("💎 ════════════════════════════════════════");
-        info!("🎯 REAL Step 2");
-        info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP2);
-        
-        let won2 = place_fall_trade(ws, STAKE_REAL_STEP2, &cfg.currency).await?;
-        
-        unsafe {
-            CURRENT_LOSS = false;
-        }
+        info!("⚠️  ════════════════════════════════════════");
+        info!("⚠️  REAL Step 1 LOST → Back to DEMO");
+        info!("⚠️  ════════════════════════════════════════");
 
-        info!("");
-        if won2 {
-            info!("🎉 ════════════════════════════════════════");
-            info!("🎉 REAL Step 2 WON! → Back to DEMO");
-            info!("🎉 ════════════════════════════════════════");
+    }
 
-            sleep(Duration::from_secs(300)).await;
-        } else {
-            info!("⚠️  ════════════════════════════════════════");
-            info!("⚠️  REAL Step 2 LOST → Back to DEMO");
-            info!("⚠️  ════════════════════════════════════════");
-        }
-    }    
-    
     Ok(())
 }
 
