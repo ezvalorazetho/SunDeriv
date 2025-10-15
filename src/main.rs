@@ -324,29 +324,28 @@ fn round_to_2_decimals(value: f64) -> f64 {
 
 /// Buy dari proposal_id, lalu subscribe POC hingga contract sold dan diketahui hasil.
 async fn buy_and_wait_result(
-    ws: &mut WsClient, 
-    proposal_id: &str, 
-    max_price: f64
+    ws: &mut WsClient,
+    proposal_id: &str,
+    max_price: f64,
+    take_profit_pct: Option<f64>, // ⬅️ tambahan
 ) -> Result<(bool, f64, f64)> {
-    // BUY - pastikan max_price sudah dibulatkan ke 2 desimal
     let max_price = round_to_2_decimals(max_price);
     let payload = json!({
         "buy": proposal_id,
         "price": max_price
     });
-    
+
     let resp: BuyResponse = send_and_wait_msg_type(ws, payload, "buy", 20).await?;
-    
     if let Some(err) = resp.error {
         return Err(anyhow!("Buy error: {:?}", err));
     }
-    
+
     let buy = resp.buy.ok_or_else(|| anyhow!("No buy payload"))?;
     let contract_id = buy.contract_id.ok_or_else(|| anyhow!("No contract_id"))?;
     let buy_price = buy.buy_price.unwrap_or(0.0);
-    
+
     info!("💰 Bought contract {} @ ${:.2}", contract_id, buy_price);
-    
+
     // Subscribe POC
     let payload = json!({
         "proposal_open_contract": 1,
@@ -354,10 +353,11 @@ async fn buy_and_wait_result(
         "subscribe": 1
     });
     ws.write.send(Message::Text(payload.to_string())).await?;
-    
-    // Tunggu hingga sold (max 90 detik untuk kontrak 1 menit)
+
+    // Kita pantau sampai sold (expire atau manual sell).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    
+    let mut already_sent_sell = false;
+
     loop {
         tokio::select! {
             maybe = ws.read.next() => {
@@ -365,36 +365,51 @@ async fn buy_and_wait_result(
                     Some(Ok(msg)) => {
                         let txt = msg.to_text()?.to_string();
                         let v: Value = serde_json::from_str(&txt).unwrap_or(json!({}));
-                        
+
                         if v.get("msg_type").and_then(|x| x.as_str()) == Some("proposal_open_contract") {
                             let p: PocResp = serde_json::from_value(v)?;
                             if let Some(pi) = p.poc {
+                                // Jika sudah sold -> evaluasi hasil akhir
                                 if pi.is_sold == Some(1) {
                                     let sell_price = pi.sell_price.unwrap_or(0.0);
                                     let status = pi.status.unwrap_or_else(|| "unknown".into());
                                     let profit = pi.profit.unwrap_or(sell_price - buy_price);
-                                    
                                     let won = status == "won" || profit > 0.0;
-                                    
+
                                     if won {
                                         info!("✅ Contract WON | Profit: ${:.2}", profit);
                                     } else {
-                                        info!("❌ Contract LOST | Loss: ${:.2}", profit.abs());
+                                        info!("❌ Contract LOST | P/L: ${:.2}", profit);
                                     }
-                                    
                                     return Ok((won, buy_price, sell_price));
+                                }
+
+                                // Belum sold → cek take profit
+                                if let (Some(tp), Some(sp)) = (take_profit_pct, pi.sell_price) {
+                                    if !already_sent_sell && buy_price > 0.0 {
+                                        let profit_pct = (sp - buy_price) / buy_price;
+                                        println!("Current Profit: {}", profit_pct);
+                                        // TP terpenuhi?
+                                        if profit_pct >= tp {
+                                            info!("🏁 Take-profit hit: {:.2}% (sell_price ${:.2} vs buy ${:.2})",
+                                                profit_pct*100.0, sp, buy_price);
+
+                                            // Kirim SELL (market). Setelah ini loop akan lanjut menunggu is_sold=1
+                                            if let Err(e) = sell_contract(ws, contract_id).await {
+                                                warn!("Failed to send SELL: {}", e);
+                                            } else {
+                                                already_sent_sell = true;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         } else if let Some(err) = v.get("error") {
                             return Err(anyhow!("POC error: {}", err));
                         }
                     }
-                    Some(Err(e)) => {
-                        return Err(anyhow!("WebSocket error: {}", e));
-                    }
-                    None => {
-                        return Err(anyhow!("WebSocket closed during contract wait"));
-                    }
+                    Some(Err(e)) => return Err(anyhow!("WebSocket error: {}", e)),
+                    None => return Err(anyhow!("WebSocket closed during contract wait")),
                 }
             },
             _ = sleep(Duration::from_millis(500)) => {
@@ -406,30 +421,53 @@ async fn buy_and_wait_result(
     }
 }
 
+
 /// Lakukan satu transaksi Fall dan kembalikan bool won/lost.
-async fn place_fall_trade(ws: &mut WsClient, stake: f64, currency: &str) -> Result<bool> {
+async fn place_fall_trade(
+    ws: &mut WsClient,
+    stake: f64,
+    currency: &str,
+    take_profit_pct: Option<f64>, // ⬅️
+) -> Result<bool> {
     let (proposal_id, ask_price) = get_proposal_put(ws, stake, currency).await?;
     info!("📝 Proposal: ${:.2}", ask_price);
-    
-    // Tambahkan margin 10% dan bulatkan ke 2 desimal
+
     let max_price = round_to_2_decimals(ask_price * 1.10);
-    
-    let (won, _buy_price, _sell_price) = buy_and_wait_result(ws, &proposal_id, max_price).await?;
-    
+    let (won, _buy_price, _sell_price) =
+        buy_and_wait_result(ws, &proposal_id, max_price, take_profit_pct).await?;
+
     Ok(won)
 }
 
-/// Lakukan satu transaksi Fall dan kembalikan bool won/lost.
-async fn place_rise_trade(ws: &mut WsClient, stake: f64, currency: &str) -> Result<bool> {
+async fn place_rise_trade(
+    ws: &mut WsClient,
+    stake: f64,
+    currency: &str,
+    take_profit_pct: Option<f64>, // ⬅️
+) -> Result<bool> {
     let (proposal_id, ask_price) = get_proposal_call(ws, stake, currency).await?;
     info!("📝 Proposal: ${:.2}", ask_price);
-    
-    // Tambahkan margin 10% dan bulatkan ke 2 desimal
+
     let max_price = round_to_2_decimals(ask_price * 1.10);
-    
-    let (won, _buy_price, _sell_price) = buy_and_wait_result(ws, &proposal_id, max_price).await?;
-    
+    let (won, _buy_price, _sell_price) =
+        buy_and_wait_result(ws, &proposal_id, max_price, take_profit_pct).await?;
+
     Ok(won)
+}
+
+
+/// Jual kontrak ke market (take profit / cut loss cepat)
+async fn sell_contract(ws: &mut WsClient, contract_id: u64) -> Result<()> {
+    // price=0 artinya ambil harga market sekarang
+    let payload = serde_json::json!({
+        "sell": contract_id,
+        "price": 0
+    });
+
+    // Response Deriv akan ber-msg_type "sell"
+    let _: serde_json::Value = send_and_wait_msg_type(ws, payload, "sell", 10).await?;
+    info!("🛎️  Sell sent for contract {}", contract_id);
+    Ok(())
 }
 
 /// Jalankan mode DEMO: cari 4 kekalahan beruntun dengan persistent connection.
@@ -449,7 +487,7 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
         info!("🎯 DEMO Trade #{} | Streak: {}/4 losses - {}/4 winner", trade_count, losses_in_a_row, winner_in_a_row);
         info!("💵 FALL | 1m | ${}", STAKE_DEMO);
         
-        let won = place_fall_trade(ws, STAKE_DEMO, &cfg.currency).await?;
+        let won = place_fall_trade(ws, STAKE_DEMO, &cfg.currency, None).await?;
         
         if !won {
             losses_in_a_row += 1;
@@ -487,8 +525,6 @@ async fn run_demo_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
             }
         }
         
-        // Jeda sebelum trade berikutnya
-        sleep(Duration::from_secs(2)).await;
     }
     
     Ok(())
@@ -509,7 +545,7 @@ async fn run_real_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
         if RISE {
             info!("💵 RISE | 1m | ${}", STAKE_REAL_STEP1);
             
-            let won1 = place_rise_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
+            let won1 = place_rise_trade(ws, STAKE_REAL_STEP1, &cfg.currency, Some(0.20)).await?;
             
             if won1 {
                 info!("");
@@ -529,7 +565,7 @@ async fn run_real_cycle(cfg: &AppCfg, ws: &mut WsClient) -> Result<()> {
         } else {
             info!("💵 FALL | 1m | ${}", STAKE_REAL_STEP1);
             
-            let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency).await?;
+            let won1 = place_fall_trade(ws, STAKE_REAL_STEP1, &cfg.currency, Some(0.20)).await?;
             
             if won1 {
                 info!("");
